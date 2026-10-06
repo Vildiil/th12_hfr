@@ -780,7 +780,7 @@ __declspec(dllexport) DWORD WINAPI hfr_start(void* unused) {
     }
     if (!patch_commit()) {LOG("Code patch commit failed");MH_Uninitialize();return 0;}
     hook_keyboard_import();
-    LOG("Mouse controller: available=%d enabled=%d bomb_button=%d direct=%d speed_limit=%d; direct movement at presentation rate, buttons at 60 Hz",mouse_supported,mouse_enabled,mouse_bomb_button,mouse_direct,mouse_speed_limit);
+    LOG("Mouse controller: available=%d enabled=%d bomb_button=%d direct=%d speed_limit=%d; unrestricted movement at presentation rate, limited movement/buttons on native 60 Hz updates",mouse_supported,mouse_enabled,mouse_bomb_button,mouse_direct,mouse_speed_limit);
     LOG("Installed at image=%p relay=%p; original executable unchanged",(void*)base,relay_page);
     return 1;
 }

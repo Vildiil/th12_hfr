@@ -12,14 +12,17 @@ right click focuses, and XBUTTON1 bombs. The menu can select XBUTTON2 instead.
 Use Save to touhou_hfr.ini to retain preferences. Mouse control starts disabled
 unless enabled in the INI.
 
-- **Direct movement:** applies mouse displacement at presentation rate and keeps
+- **Direct movement:** with its speed limit off, applies displacement at presentation rate and keeps
   the pointer and crosshair on the live character position. Right click halves
   sensitivity. The player sprite bypasses historical interpolation; other sprites
   retain the existing interpolation setting.
 - **Limit to normal character speed:** optionally caps direct displacement using
-  live normal/focused speed, axis scale, elapsed time and game-speed percentage.
-  Diagonal displacement shares the same total speed budget. Excess travel is
-  discarded, rather than queued; a stall permits at most one native frame of travel.
+  live normal/focused speed and axis scale. Mouse reports are collected between
+  native updates, but the live player position changes only on a native 60 Hz
+  update, with at most one capped step per native tick. Diagonal displacement
+  shares the same total speed budget. All excess travel is discarded after that
+  step. Game speed follows the native update schedule. A pause, keyboard takeover
+  or lost focus clears unconsumed movement; stalls cannot bank extra steps.
 - With Direct movement off, the character follows the cursor using ordinary
   native direction input. The closest legal step, including staying still, is
   selected at each 60 Hz input poll. The crosshair marks the target in this mode.
@@ -48,7 +51,9 @@ movement. The feature is intended for maintainer evaluation and playtesting.
 
 `mouse_nc.c` wraps the native input poll, retaining native input and button-edge
 handling. Additional presentation frames sample mouse movement without calling
-the native poll or mutating the game's input history. `mouse_follow.h` holds the
+the native poll or mutating the game's input history. Limited mode stores only
+the net displacement for the next native update; presentation-only samples do
+not write the live player position. `mouse_follow.h` holds the
 native-step target selection, client/backbuffer conversion and button latches.
 
 The verified renderer adds the live playfield origin at RVA `0x53cac0`, scaling
@@ -62,8 +67,11 @@ projectile activity gates were checked against a live paused stage.
 samples and runs from `test64.ps1` / `test64.sh`. Coverage includes buttons and
 bomb edges, gates, keyboard priority, F10 debounce, viewport scaling, 320 follow
 targets, direct displacement, focus sensitivity, wall reversal, reanchoring,
-speed limits at 60/144/360/1000 Hz, two character speeds, diagonal magnitude,
-no queued motion, stall/duplicate-poll limits and game-speed scaling. It also
+256 keyboard/mouse parity comparisons across 60/144/360/1000 Hz displays and
+60/125/500/1000 Hz devices, two character speeds, focus, 50/100 percent game
+speed, no position writes on presentation-only frames, and transition/stall/
+duplicate-poll limits. Unconsumed input and excess travel cannot produce a
+sequence of catch-up steps. It also
 installs and removes the poll detour on an inert copy of the supplied executable;
 only the test replacement is executed, never original game code.
 

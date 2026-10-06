@@ -59,7 +59,7 @@ static void fixture(void) {
     test_cursor=(POINT){1584,1200};test_client=(RECT){0,0,2560,1440};
     mouse_enabled=mouse_supported=1;mouse_bomb_button=1;mouse_toggle_held=1;
     mouse_direct=0;mouse_anchor_ready=0;guard_failed=0;
-    mouse_speed_limit=0;frequency=360000;speed_pct=100;test_clock=360000;mouse_sample_time=0;
+    mouse_speed_limit=0;frequency=360000;speed_pct=100;test_clock=360000;ticks=0;mouse_limited_tick=UINT64_MAX;mouse_pending[0]=mouse_pending[1]=0;
     mouse_buttons.blocked=7;mouse_window_handle=(HWND)1;mouse_poll_original=native_poll;
     subtick_player.armed=proj_slice.armed=1;
     const float pos[]={192,384},bounds[]={8,16,368,416},speeds[]={4,2,2.82842712f,1.41421356f};
@@ -147,34 +147,63 @@ int main(int argc,char** argv) {
     assert(!mouse_live_sprite((void*)(base+game->player+0x420)));
     test_keys[VK_ESCAPE]=1;test_cursor.x-=60;mouse_present_move();assert(pos[0]==364);
     puts("PASS: direct display-rate movement, exact displacement, no catch-up, half-sensitivity focus, no release jump, bounds/reversal, transition re-anchoring, keyboard priority and player-only smoothing bypass");
-    const int rates[]={60,144,360,1000};
-    for (unsigned r=0;r<4;++r) for (int focused=0;focused<2;++focused)
-    for (int character=0;character<2;++character) {
-        fixture();mouse_direct=1;mouse_speed_limit=1;
+    /* Sample physical displacement at presentation rate, but apply it only on
+       native updates. Compare total distance with the verified keyboard step. */
+    const int display_rates[]={60,144,360,1000},device_rates[]={60,125,500,1000};
+    for (unsigned r=0;r<4;++r) for (unsigned d=0;d<4;++d)
+    for (int focus=0;focus<2;++focus) for (int character=0;character<2;++character)
+    for (int slow=0;slow<2;++slow) {
+        fixture();mouse_direct=mouse_speed_limit=1;poll();test_keys[VK_RBUTTON]=focus;
         float* live_speeds=(float*)(base+game->player+game->pl_speed_straight);
         live_speeds[0]=character?5:4;live_speeds[1]=character?2.5f:2;
-        poll();test_keys[VK_RBUTTON]=focused;
-        for (int n=0;n<24;++n) {
-            float x=pos[0],y=pos[1];
-            test_clock+=360000/rates[r];
-            test_cursor.x+=(n&1)?-180:180;test_cursor.y+=(n&1)?-120:120;
-            mouse_present_move();
+        speed_pct=slow?50:100;
+        struct FixedClock cadence={test_clock+360000/(60.0*speed_pct/100.0)};
+        LONGLONG next_report=test_clock+360000/device_rates[d];
+        float travel=0;int native_steps=0;double test_phase;
+        for (int frame=1;frame<=display_rates[r];++frame) {
+            float x=pos[0],y=pos[1];test_clock+=360000/display_rates[r];
+            if (test_clock>=next_report) {
+                int sign=(native_steps&1)?-1:1;
+                test_cursor.x+=sign*60;test_cursor.y+=sign*60;
+                do {next_report+=360000/device_rates[d];} while(next_report<=test_clock);
+            }
+            int native=fixed_clock_step_at(&cadence,test_clock,frequency,display_rates[r],speed_pct,&test_phase);
+            if (native) {++ticks;++native_steps;poll();}
+            else mouse_present_move();
             float distance=hypotf(pos[0]-x,pos[1]-y);
-            float maximum=live_speeds[focused]*60.0f/rates[r];
-            assert(fabsf(distance-maximum)<0.0001f);
-            assert(fabsf((pos[1]-y)/(pos[0]-x)-2.0f/3)<0.002f);
-            x=pos[0];y=pos[1];test_clock+=360000/rates[r];mouse_present_move();
-            assert(pos[0]==x && pos[1]==y); /* no residual swipe queued */
+            if (!native) assert(pos[0]==x && pos[1]==y);
+            else assert(fabsf(distance-live_speeds[focus])<0.0001f);
+            travel+=distance;
+        }
+        float keyboard_dx,keyboard_dy;
+        subtick_direction(SUBTICK_RIGHT|(focus?SUBTICK_FOCUS:0),live_speeds,live_speeds,&keyboard_dx,&keyboard_dy);
+        float keyboard_travel=hypotf(keyboard_dx,keyboard_dy)*native_steps;
+        assert(native_steps==(slow?30:60));
+        if (fabsf(travel-keyboard_travel)>0.02f) {
+            fprintf(stderr,"Mouse/keyboard parity failed: display=%d device=%d focus=%d travel=%f keyboard=%f\n",display_rates[r],device_rates[d],focus,travel,keyboard_travel);
+            return 1;
         }
     }
+    puts("PASS: 256 native-60-Hz keyboard/mouse speed comparisons across display/device rates, normal/focus speeds, two characters and 50/100 percent game speed; no position writes on presentation-only frames");
+
     fixture();mouse_direct=1;hfr_ui_set(UI_MOUSE_SPEED_LIMIT,1);assert(hfr_ui_get(UI_MOUSE_SPEED_LIMIT));poll();
-    test_clock+=1000;test_cursor.x+=1;mouse_present_move();assert(fabsf(pos[0]-192-1.0f/3)<0.00002f);
-    float before=pos[0];test_clock+=360000*10;test_cursor.x+=300;mouse_present_move();assert(fabsf(pos[0]-before-4)<0.00002f);
-    before=pos[0];test_cursor.x+=300;mouse_present_move();assert(pos[0]==before); /* same-time polls cannot add travel */
-    test_clock+=1000;test_cursor.x-=300;mouse_present_move();assert(fabsf(pos[0]-before+4.0f/6)<0.00002f);
-    speed_pct=50;before=pos[0];test_clock+=1000;test_cursor.x+=300;mouse_present_move();assert(fabsf(pos[0]-before-4.0f/12)<0.00002f);
-    hfr_ui_set(UI_MOUSE_SPEED_LIMIT,0);poll();before=pos[0];test_clock+=1000;test_cursor.x+=60;mouse_present_move();assert(pos[0]==before+20);
-    puts("PASS: speed cap at 60/144/360/1000 Hz, two character speeds, focus, diagonal magnitude/direction, immediate small movements, no queued travel, stall/duplicate-poll caps, game-speed scaling and menu toggle");
+    test_cursor.x+=1;mouse_present_move();assert(pos[0]==192);
+    ++ticks;poll();assert(fabsf(pos[0]-192-1.0f/3)<0.00002f);
+    float before=pos[0];test_cursor.x+=300;mouse_present_move();assert(pos[0]==before);
+    ++ticks;poll();assert(fabsf(pos[0]-before-4)<0.00002f);
+    before=pos[0];test_cursor.x+=60;poll();assert(pos[0]==before); /* duplicate native poll */
+    test_menu=1;mouse_present_move();assert(mouse_pending[0]==0 && mouse_pending[1]==0);
+    test_menu=0;++ticks;poll();assert(pos[0]==before); /* no pending motion after menu */
+    test_cursor.x+=300;mouse_present_move();test_clock+=360000*10;assert(pos[0]==before);
+    ++ticks;poll();assert(fabsf(pos[0]-before-4)<0.00002f); /* stall cannot bank extra steps */
+    before=pos[0];++ticks;poll();assert(pos[0]==before); /* excess was discarded */
+    test_cursor.x-=300;mouse_present_move();++ticks;poll();assert(pos[0]==before-4);
+    before=pos[0];test_cursor.x+=60;mouse_present_move();test_foreground=0;mouse_present_move();
+    test_foreground=1;++ticks;poll();assert(pos[0]==before);
+    test_cursor.x+=60;mouse_present_move();test_native=SUBTICK_LEFT;++ticks;poll();assert(pos[0]==before);
+    test_native=0;++ticks;poll();assert(pos[0]==before);
+    hfr_ui_set(UI_MOUSE_SPEED_LIMIT,0);poll();test_cursor.x+=60;mouse_present_move();assert(pos[0]==before+20);
+    puts("PASS: small native-tick movements, one-step speed cap, no extra budget from duplicate polls/stalls, discarded excess/transition input, immediate reversal, keyboard priority and unrestricted-mode toggle");
     if(argc>1) test_real_prologue(argv[1]);
     free((void*)base);return 0;
 }

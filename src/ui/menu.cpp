@@ -155,8 +155,9 @@ void draw_mouse_controls() {
     ImGui::BeginDisabled(!direct);
     if (ImGui::Checkbox("Limit to normal character speed",&limited)) hfr_ui_set(UI_MOUSE_SPEED_LIMIT,limited);
     ImGui::EndDisabled();
-    if (direct && limited) ImGui::TextWrapped("Fast swipes are capped at your character's normal speed, or focused speed while holding right-click. Excess movement is discarded, so stopping the mouse stops the character.");
-    ImGui::TextWrapped(direct ? "Move the mouse to move the character immediately. The crosshair stays on the character. Right-click halves movement sensitivity for precise dodges."
+    if (direct && limited) ImGui::TextWrapped("Movement updates at the game's native 60 Hz, capped at normal or focused character speed. Each update discards excess swipe distance; there is no catch-up across later frames.");
+    ImGui::TextWrapped(direct ? (limited ? "The crosshair stays on the character. Right-click halves mouse sensitivity and uses focused speed."
+        : "Move the mouse to move the character immediately. The crosshair stays on the character. Right-click halves movement sensitivity for precise dodges.")
         : "The character follows the cursor at normal game speed.");
     ImGui::BulletText("Hold left mouse: fire");
     ImGui::BulletText("Hold right mouse: slow / focus");

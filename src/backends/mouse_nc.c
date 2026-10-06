@@ -11,7 +11,8 @@ static unsigned mouse_output;
 static float mouse_target[2],mouse_target_fraction[2];
 static int mouse_direct=1,mouse_anchor_ready;
 static int mouse_speed_limit;
-static double mouse_sample_time;
+static float mouse_pending[2];
+static uint64_t mouse_limited_tick=UINT64_MAX;
 static float mouse_last_cursor[2];
 static unsigned mouse_native_input;
 
@@ -20,15 +21,7 @@ static void mouse_set_enabled(int on) {
     mouse_enabled=!!on; mouse_active=0; mouse_buttons.blocked=7; mouse_anchor_ready=0;
     LOG("Mouse control %s (F10 toggles, F11 Mouse tab)",mouse_enabled?"enabled":"disabled");
 }
-static uint32_t mouse_sample(uint32_t input) {
-    LARGE_INTEGER stamp;QueryPerformanceCounter(&stamp);
-    double sample_time=frequency>0?(double)stamp.QuadPart/frequency:0;
-    double elapsed=sample_time-mouse_sample_time;
-    mouse_sample_time=sample_time;
-    /* Never bank unused travel or convert a long stall into a teleport. */
-    double frame_time=elapsed*60.0*speed_pct/100.0;
-    if (!(frame_time>0)) frame_time=0;
-    if (frame_time>1) frame_time=1;
+static uint32_t mouse_sample(uint32_t input,int native_tick) {
     int foreground=mouse_window_handle && GetForegroundWindow()==mouse_window_handle;
     int key=(GetAsyncKeyState(VK_F10)&0x8000)!=0;
     if (foreground && !hfr_menu_visible()) {
@@ -56,7 +49,9 @@ static uint32_t mouse_sample(uint32_t input) {
                  ((GetAsyncKeyState(mouse_bomb_button==2?VK_XBUTTON2:VK_XBUTTON1)&0x8000)?4:0);
     input |= mouse_follow_buttons(&mouse_buttons,raw,active);
     mouse_active=active;
-    if (!active || !subtick_player.armed || (input&0xf0)) mouse_anchor_ready=0;
+    if (!active || !subtick_player.armed || (input&0xf0)) {
+        mouse_anchor_ready=0;mouse_pending[0]=mouse_pending[1]=0;
+    }
     if (active) {
         /* Physical arrows/controller directions take precedence while held. */
         if (subtick_player.armed && !(input&0xf0)) {
@@ -72,19 +67,31 @@ static uint32_t mouse_sample(uint32_t input) {
                     float gain=(input&SUBTICK_FOCUS)?0.5f:1.0f;
                     float dx=(cx-mouse_last_cursor[0])*gain,dy=(cy-mouse_last_cursor[1])*gain;
                     if (mouse_speed_limit) {
-                        const float* speeds=(const float*)(p+game->pl_speed_straight);
-                        const float* scale=(const float*)(p+game->pl_scale);
-                        float sx=fabsf(scale[0]),sy=fabsf(scale[1]);
-                        if (!(sx>0) || !isfinite(sx)) {dx=0;sx=1;}
-                        if (!(sy>0) || !isfinite(sy)) {dy=0;sy=1;}
-                        float distance=hypotf(dx/sx,dy/sy);
-                        float limit=speeds[(input&SUBTICK_FOCUS)!=0]*(float)frame_time;
-                        if (!(limit>0) || !isfinite(limit)) dx=dy=0;
-                        else if (distance>limit) {float ratio=limit/distance;dx*=ratio;dy*=ratio;}
+                        /* Gather reports between native updates without moving the
+                           gameplay position. Consume at most one speed-limited step
+                           per native tick, then discard all excess swipe distance. */
+                        mouse_pending[0]+=dx;mouse_pending[1]+=dy;
+                        dx=dy=0;
+                        if (native_tick && mouse_limited_tick!=ticks) {
+                            mouse_limited_tick=ticks;
+                            dx=mouse_pending[0];dy=mouse_pending[1];
+                            mouse_pending[0]=mouse_pending[1]=0;
+                            const float* speeds=(const float*)(p+game->pl_speed_straight);
+                            const float* scale=(const float*)(p+game->pl_scale);
+                            float sx=fabsf(scale[0]),sy=fabsf(scale[1]);
+                            if (!(sx>0) || !isfinite(sx)) {dx=0;sx=1;}
+                            if (!(sy>0) || !isfinite(sy)) {dy=0;sy=1;}
+                            float distance=hypotf(dx/sx,dy/sy);
+                            float limit=speeds[(input&SUBTICK_FOCUS)!=0];
+                            if (!(limit>0) || !isfinite(limit)) dx=dy=0;
+                            else if (distance>limit) {float ratio=limit/distance;dx*=ratio;dy*=ratio;}
+                        }
                     }
-                    pos[0]=subtick_clamp(pos[0]+dx,bounds[0],bounds[2]);
-                    pos[1]=subtick_clamp(pos[1]+dy,bounds[1],bounds[3]);
-                }
+                    if (dx!=0 || dy!=0) {
+                        pos[0]=subtick_clamp(pos[0]+dx,bounds[0],bounds[2]);
+                        pos[1]=subtick_clamp(pos[1]+dy,bounds[1],bounds[3]);
+                    }
+                } else mouse_pending[0]=mouse_pending[1]=0;
                 mouse_last_cursor[0]=cx;mouse_last_cursor[1]=cy;mouse_anchor_ready=1;
                 /* Keep the OS pointer on the character too. This prevents reduced
                    sensitivity or a playfield clamp from exhausting desktop travel.
@@ -114,12 +121,12 @@ static uint32_t mouse_sample(uint32_t input) {
 }
 static uint32_t mouse_poll(uintptr_t argument) {
     mouse_native_input=mouse_poll_original(argument);
-    return mouse_sample(mouse_native_input);
+    return mouse_sample(mouse_native_input,1);
 }
 static void mouse_present_move(void) {
     /* Do not call the game's poll routine or mutate its button history on extra
        presentation frames. Only native ticks feed fire/focus/bomb into the game. */
-    if (mouse_supported && mouse_direct) mouse_sample(mouse_native_input);
+    if (mouse_supported && mouse_direct) mouse_sample(mouse_native_input,0);
 }
 static int mouse_live_sprite(const void* vm) {
     /* Verified 6ba5a..6ba98: the player's VM is fed from live position. */
